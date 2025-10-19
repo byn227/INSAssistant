@@ -1,0 +1,5 @@
+[scraper]
+user = username
+pwd = password
+root_dir = directory for save the data crawl
+base_url = link web insa cvl
