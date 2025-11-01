@@ -9,8 +9,8 @@ from datetime import datetime
 import traceback # Import pour un meilleur affichage des erreurs
 import re # Pour le nettoyage des noms de fichiers
 
-# Import des classes du module celene_parser
-from celene_parser import CeleneParser, SecureStorage, CASAuth, Classes, Course, FileEntry
+# Import des classes du module Celene_parser
+from Celene_parser import CeleneParser, SecureStorage, CASAuth, Classes, Course, FileEntry
 
 class CeleneScraperConfig:
     """Classe pour gérer la configuration du scraper"""
@@ -50,7 +50,11 @@ class CeleneScraper:
         self.config = config
         self.use_cache = use_cache
         self.cache_file = config.root_dir / ".celene_cache.json" # Utilisation de pathlib
-        self.log_file = config.root_dir / "scraper.log" # Utilisation de pathlib
+        
+        # Créer le dossier Logs s'il n'existe pas
+        log_dir = Path("Logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.log_file = log_dir / "scraper.log"
         
         # Initialiser le parser en lui passant le répertoire racine
         # Assurez-vous que CeleneParser a un argument `root_dir` dans son __init__
