@@ -1,364 +1,255 @@
 import json
-import os
 from pathlib import Path
-from typing import List, Dict, Optional
-from tqdm import tqdm
+from typing import List, Dict
 import numpy as np
-
-# Sentence Transformers cho embedding
 from sentence_transformers import SentenceTransformer
-
-# Qdrant client
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-
-
-class TextChunker:
+class Chunker:
+    """Découpe texte en français"""
     
-    def __init__(self, chunk_size: int = 512, overlap: int = 50):
-
-        self.chunk_size = chunk_size
+    def __init__(self, size: int = 512, overlap: int = 80):
+        self.size = size
         self.overlap = overlap
+        self.seps = ['\n\n', '.\n', '. ', ' ! ', ' ? ', ' ; ', ' : ', '\n', ', ']
     
-    def chunk_text(self, text: str, metadata: Dict = None) -> List[Dict]:
-
-        if not text or len(text.strip()) == 0:
+    def chunk(self, text: str, meta: Dict = None) -> List[Dict]:
+        """Découpe texte avec overlap"""
+        if not text or not text.strip():
             return []
         
-        chunks = []
-        start = 0
-        text_len = len(text)
-        chunk_id = 0
+        chunks, start, tid = [], 0, 0
+        while start < len(text):
+            end = start + self.size
+            chunk_txt = text[start:end]
         
-        while start < text_len:
-       
-            end = start + self.chunk_size
-            chunk_text = text[start:end]
-            
-
-            if end < text_len:
-
-                for sep in ['\n\n', '. ', '.\n', '! ', '? ', '\n']:
-                    last_sep = chunk_text.rfind(sep)
-                    if last_sep > self.chunk_size * 0.7: 
-                        chunk_text = text[start:start + last_sep + len(sep)]
-                        end = start + last_sep + len(sep)
+            # Chercher bon séparateur (70%+ du chunk)
+            if end < len(text):
+                for sep in self.seps:
+                    pos = chunk_txt.rfind(sep)
+                    if pos > self.size * 0.7:
+                        chunk_txt = text[start:start + pos + len(sep)]
+                        end = start + pos + len(sep)
                         break
             
-
-            if len(chunk_text.strip()) > 50:
-                chunk_meta = {
-                    **(metadata or {}),
-                    'chunk_id': chunk_id,
-                    'chunk_start': start,
-                    'chunk_end': end,
-                }
-                
+            # Garder que chunks > 50 chars
+            if len(chunk_txt.strip()) > 50:
                 chunks.append({
-                    'text': chunk_text.strip(),
-                    'metadata': chunk_meta
+                    'text': chunk_txt.strip(),
+                    'metadata': {**(meta or {}), 'chunk_id': tid}
                 })
-                chunk_id += 1
+                tid += 1
             
-
             start = end - self.overlap
-            if start >= text_len:
+            if start >= len(text):
                 break
         
         return chunks
     
-    def chunk_pdf_pages(self, pages: List[Dict], base_metadata: Dict = None) -> List[Dict]:
-
+    def chunk_pages(self, pages: List[Dict], meta: Dict = None) -> List[Dict]:
+        """Découpe pages PDF"""
         all_chunks = []
-        
-        for page_info in pages:
-            page_num = page_info.get('page', 0)
-            page_text = page_info.get('text', '')
-            
-            if not page_text or len(page_text.strip()) == 0:
-                continue
-            
-
-            page_meta = {
-                **(base_metadata or {}),
-                'page': page_num,
-            }
-            
-
-            chunks = self.chunk_text(page_text, page_meta)
-            all_chunks.extend(chunks)
-        
+        for p in pages:
+            if txt := p.get('text', '').strip():
+                page_meta = {**(meta or {}), 'page': p.get('page', 0)}
+                all_chunks.extend(self.chunk(txt, page_meta))
         return all_chunks
 
 
-class QdrantEmbedder:
+class Embedder:
+    """Embedder + Qdrant"""
     
     def __init__(
         self,
-        collection_name: str = "insa_documents",
-        model_name: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
-        qdrant_host: str = "localhost",
-        qdrant_port: int = 6333,
+        collection: str = "insa_docs",
+        model: str = "dangvantuan/sentence-camembert-large",
+        host: str = "localhost",
+        port: int = 6333
     ):
-        """
-        Args:
-            collection_name: Collection name in Qdrant
-            model_name: Embedding model (supports French/Vietnamese)
-            qdrant_host: Qdrant server host
-            qdrant_port: Qdrant server port
-        """
-        print(f"🔧 Initializing embedding model: {model_name}")
-        self.model = SentenceTransformer(model_name)
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        print(f" Model: {model}")
         
-        print(f"🔧 Connecting to Qdrant: {qdrant_host}:{qdrant_port}")
-        self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
-        self.collection_name = collection_name
+        # Charger model avec fallback
+        try:
+            self.model = SentenceTransformer(model)
+            print("    Loaded")
+        except Exception as e:
+            print(f"    Failed: {e}")
+            fallback = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+            print(f"   → Fallback: {fallback}")
+            self.model = SentenceTransformer(fallback)
         
-        self._init_collection()
-    
-    def _init_collection(self):
-        """Create collection if it doesn't exist"""
-        collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
+        self.dim = self.model.get_sentence_embedding_dimension()
+        self.client = QdrantClient(host=host, port=port)
+        self.collection = collection
         
-        if self.collection_name not in collection_names:
-            print(f" Creating new collection: {self.collection_name}")
+        # Créer collection si besoin
+        colls = [c.name for c in self.client.get_collections().collections]
+        if collection not in colls:
+            print(f" Création collection: {collection}")
             self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=VectorParams(
-                    size=self.embedding_dim,
-                    distance=Distance.COSINE
-                )
+                collection_name=collection,
+                vectors_config=VectorParams(size=self.dim, distance=Distance.COSINE)
             )
         else:
-            print(f" Collection already exists: {self.collection_name}")
+            print(f" Collection existe: {collection}")
     
-    def embed_texts(self, texts: List[str], batch_size: int = 32) -> np.ndarray:
-        """Create embeddings for list of texts"""
-        embeddings = self.model.encode(
+    def embed(self, texts: List[str]) -> np.ndarray:
+        """Textes → vecteurs"""
+        print(f" Encoding {len(texts)} chunks...")
+        return self.model.encode(
             texts,
-            batch_size=batch_size,
+            batch_size=32,
             show_progress_bar=True,
-            convert_to_numpy=True
+            convert_to_numpy=True,
+            normalize_embeddings=True  # Important pour cosine!
         )
-        return embeddings
     
-    def add_chunks(self, chunks: List[Dict], batch_size: int = 100):
-        """
-        Add chunks to Qdrant
-        
-        Args:
-            chunks: List of dicts with 'text' and 'metadata'
-            batch_size: Number of chunks per batch
-        """
+    def add(self, chunks: List[Dict], batch: int = 100):
+        """Upload chunks vers Qdrant"""
         if not chunks:
             return
         
-        # Get starting ID
+        # ID de départ
         try:
-            collection_info = self.client.get_collection(self.collection_name)
-            start_id = collection_info.points_count
+            info = self.client.get_collection(self.collection)
+            start_id = info.points_count
         except:
             start_id = 0
         
-        # Embed in batches
-        print(f" Embedding {len(chunks)} chunks...")
-        texts = [chunk['text'] for chunk in chunks]
-        embeddings = self.embed_texts(texts, batch_size=32)
+        # Embed
+        texts = [c['text'] for c in chunks]
+        vecs = self.embed(texts)
         
-        # Upload to Qdrant in batches
-        print(f"📤 Uploading to Qdrant...")
-        for i in range(0, len(chunks), batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            batch_embeddings = embeddings[i:i + batch_size]
-            
+        # Upload par batch
+        print(f" Uploading...")
+        for i in range(0, len(chunks), batch):
             points = []
-            for j, (chunk, embedding) in enumerate(zip(batch_chunks, batch_embeddings)):
-                point_id = start_id + i + j
-                
+            for j, (chunk, vec) in enumerate(zip(chunks[i:i+batch], vecs[i:i+batch])):
                 points.append(PointStruct(
-                    id=point_id,
-                    vector=embedding.tolist(),
-                    payload={
-                        'text': chunk['text'],
-                        **chunk['metadata']
-                    }
+                    id=start_id + i + j,
+                    vector=vec.tolist(),
+                    payload={'text': chunk['text'], **chunk['metadata']}
                 ))
             
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
-            )
+            self.client.upsert(collection_name=self.collection, points=points)
         
-        print(f" Added {len(chunks)} chunks to Qdrant")
+        print(f" {len(chunks)} chunks added")
 
 
-def process_json_file(
-    json_path: Path,
-    chunker: TextChunker,
-    embedder: QdrantEmbedder,
-) -> int:
-    """
-    Process a JSON file
-    
-    Returns:
-        Number of chunks created
-    """
+def process_json(path: Path, chunker: Chunker, embedder: Embedder) -> int:
+    """Traite 1 fichier JSON"""
     try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        data = json.loads(path.read_text(encoding='utf-8'))
+        ftype = data.get('filetype', 'unknown')
         
-        filetype = data.get('filetype', 'unknown')
-        filename = data.get('filename', json_path.name)
-        filepath = data.get('filepath', str(json_path))
-        
-        # Common metadata
-        base_metadata = {
-            'source_file': filename,
-            'source_path': filepath,
-            'filetype': filetype,
+        # Metadata commune
+        meta = {
+            'source_file': data.get('filename', path.name),
+            'source_path': data.get('filepath', str(path)),
+            'filetype': ftype
         }
         
         chunks = []
         
-        if filetype == 'pdf':
-            # PDF: chunk by pages
-            pages = data.get('pages', [])
-            metadata = data.get('metadata', {})
-            base_metadata.update({
-                'title': metadata.get('title', ''),
-                'author': metadata.get('author', ''),
-                'num_pages': metadata.get('num_pages', 0),
+        # PDF: chunk par pages
+        if ftype == 'pdf':
+            m = data.get('metadata', {})
+            meta.update({
+                'title': m.get('title', ''),
+                'author': m.get('author', ''),
+                'num_pages': m.get('num_pages', 0)
             })
-            chunks = chunker.chunk_pdf_pages(pages, base_metadata)
+            chunks = chunker.chunk_pages(data.get('pages', []), meta)
         
-        elif filetype == 'code':
-            # Code: chunk by lines
-            content = data.get('content', '')
-            language = data.get('language', '')
-            base_metadata.update({
-                'language': language,
-            })
-            chunks = chunker.chunk_text(content, base_metadata)
-        
-        elif filetype == 'text':
-            # Text: chunk directly
-            content = data.get('content', '')
-            chunks = chunker.chunk_text(content, base_metadata)
+        # Code/Text: chunk direct
+        elif ftype in ('code', 'text'):
+            if ftype == 'code':
+                meta['language'] = data.get('language', '')
+            chunks = chunker.chunk(data.get('content', ''), meta)
         
         else:
-            print(f"⚠️  Unknown filetype: {filetype} for {filename}")
+            print(f"  Type inconnu: {ftype}")
             return 0
         
-        # Add to Qdrant
+        # Upload
         if chunks:
-            embedder.add_chunks(chunks)
+            embedder.add(chunks)
         
         return len(chunks)
     
     except Exception as e:
-        print(f"❌ Error processing {json_path.name}: {e}")
+        print(f" Error [{path.name}]: {e}")
         return 0
 
 
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(
-        description="Embed JSON files vào Qdrant database"
-    )
+    p = argparse.ArgumentParser(description="JSON → Qdrant Embedder")
+    p.add_argument('--source', default='../Data_json')
+    p.add_argument('--collection', default='insa_docs')
+    p.add_argument('--model', default='dangvantuan/sentence-camembert-large')
+    p.add_argument('--chunk-size', type=int, default=512)
+    p.add_argument('--overlap', type=int, default=80)
+    p.add_argument('--host', default='localhost')
+    p.add_argument('--port', type=int, default=6333)
+    p.add_argument('--limit', type=int, help='Limit nb files')
     
-    parser.add_argument(
-        '--source', 
-        default='../Data_json',
-        help='Directory containing JSON files'
-    )
-    parser.add_argument(
-        '--collection', 
-        default='insa_documents',
-        help='Collection name in Qdrant'
-    )
-    parser.add_argument(
-        '--model',
-        default='sentence-transformers/paraphrase-multilingual-mpnet-base-v2',
-        help='Embedding model (multilingual support)'
-    )
-    parser.add_argument(
-        '--chunk-size',
-        type=int,
-        default=512,
-        help='Chunk size in characters'
-    )
-    parser.add_argument(
-        '--overlap',
-        type=int,
-        default=50,
-        help='Overlap between chunks in characters'
-    )
-    parser.add_argument(
-        '--host',
-        default='localhost',
-        help='Qdrant host'
-    )
-    parser.add_argument(
-        '--port',
-        type=int,
-        default=6333,
-        help='Qdrant port'
-    )
-    parser.add_argument(
-        '--limit',
-        type=int,
-        help='Limit number of files to process (for testing)'
-    )
+    args = p.parse_args()
     
-    args = parser.parse_args()
-    
-    print("=" * 60)
-    print(" INSA Document Embedder for Qdrant")
-    print("=" * 60)
+    print("=" * 70)
+    print("🇫🇷 JSON → Qdrant Embedder")
+    print("=" * 70)
     print(f"Source: {args.source}")
     print(f"Collection: {args.collection}")
     print(f"Model: {args.model}")
-    print(f"Chunk size: {args.chunk_size} chars")
-    print(f"Overlap: {args.overlap} chars")
-    print("=" * 60)
+    print(f"Chunk: {args.chunk_size} chars, overlap: {args.overlap}")
+    print(f"Qdrant: {args.host}:{args.port}")
+    print("=" * 70)
     
-    # Initialize
-    chunker = TextChunker(chunk_size=args.chunk_size, overlap=args.overlap)
-    embedder = QdrantEmbedder(
-        collection_name=args.collection,
-        model_name=args.model,
-        qdrant_host=args.host,
-        qdrant_port=args.port,
-    )
+    # Init
+    chunker = Chunker(args.chunk_size, args.overlap)
+    embedder = Embedder(args.collection, args.model, args.host, args.port)
     
-    # Find all JSON files
-    source_dir = Path(args.source)
-    json_files = list(source_dir.rglob("*.json"))
+    # Scan JSON files
+    src = Path(args.source)
+    if not src.exists():
+        # Auto-detect from script location
+        alt = Path(__file__).parent.parent / args.source.lstrip('./')
+        if alt.exists():
+            src = alt
     
+    if not src.exists():
+        print(f" Source not found: {src}")
+        return
+    
+    files = list(src.rglob("*.json"))
     if args.limit:
-        json_files = json_files[:args.limit]
+        files = files[:args.limit]
     
-    print(f"\n🔍 Found {len(json_files)} JSON files")
-    print("-" * 60)
+    print(f"\n Found {len(files)} JSON files")
+    print("-" * 70)
     
-    # Process each file
+    # Process
     total_chunks = 0
-    for i, json_path in enumerate(json_files, 1):
-        print(f"\n[{i}/{len(json_files)}] Processing: {json_path.name}")
-        num_chunks = process_json_file(json_path, chunker, embedder)
-        total_chunks += num_chunks
-        print(f"  → {num_chunks} chunks")
+    success = 0
     
-    print("\n" + "=" * 60)
-    print("✅ COMPLETED!")
-    print("=" * 60)
-    print(f"Files processed: {len(json_files)}")
-    print(f"Total chunks: {total_chunks}")
+    for i, f in enumerate(files, 1):
+        print(f"\n[{i}/{len(files)}] {f.name}")
+        n = process_json(f, chunker, embedder)
+        if n > 0:
+            total_chunks += n
+            success += 1
+        print(f"  → {n} chunks")
+    
+    # Stats
+    print("\n" + "=" * 70)
+    print(" TERMINÉ")
+    print("=" * 70)
+    print(f"Files: {success}/{len(files)}")
+    print(f"Chunks: {total_chunks}")
     print(f"Collection: {args.collection}")
-    print("=" * 60)
+    print("=" * 70)
 
 
 if __name__ == "__main__":

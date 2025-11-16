@@ -6,4 +6,4 @@ __pycache__/
 celene_cookies.pkl
 *.log
 *.pyc
-Convert/qdrant_storage/
+qdrant_storage/
