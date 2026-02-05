@@ -1,6 +1,3 @@
-"""
-Authentication classes for Celene Parser: SecureStorage and CASAuth
-"""
 import os
 import json
 import time

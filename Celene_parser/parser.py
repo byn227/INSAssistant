@@ -160,8 +160,7 @@ class CeleneParser:
             if class_data.status_code == 200:
                 logger("GET RESPONSE 200 -> Now parsing the page")
                 soup = BeautifulSoup(class_data.text, 'html.parser')
-                
-                # Tìm ul.topics và lấy tất cả các li con
+          
                 ul_topics = soup.find("ul", class_="topics")
                 if ul_topics:
                     sections = ul_topics.find_all("li", recursive=False)
@@ -172,11 +171,11 @@ class CeleneParser:
                 
                 for section in sections:
                     logger("SectionName")
-                    # Tìm tên section - có thể trong h3 hoặc h4
+
                     topic_elem = section.find("h3", class_="sectionname") or section.find("h4", class_=lambda x: x and "sectionname" in x if x else False)
                     topic = topic_elem.get_text(strip=True) if topic_elem else None
                     
-                    # Tìm ul.section chứa các activities
+          
                     content_ul = section.find("ul", class_="section")
                     if content_ul:
                         li_elements = content_ul.find_all("li", recursive=False)
