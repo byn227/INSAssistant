@@ -242,26 +242,6 @@ ollama pull phi          # Télécharger un modèle
 ollama serve             # Démarrer le service (si nécessaire)
 ```
 
-### Collection Qdrant inexistante
-
-```bash
-cd Convert
-python3 embed_to_qdrant.py
-```
-
-### Erreur de permission Docker
-
-```bash
-sudo usermod -aG docker $USER
-# Puis se déconnecter/reconnecter
-```
-
-### Port 8501 déjà utilisé
-
-```bash
-streamlit run web_app.py --server.port 8502
-```
-
 ## 🌐 Déploiement en production
 
 ### Sur un serveur
@@ -304,27 +284,9 @@ firefox http://localhost:6333/dashboard
 - Les logs de Streamlit s'affichent dans le terminal
 - Les logs Ollama : `journalctl -u ollama` (si installé en service)
 
-## 🤝 Contribution
-
-Pour contribuer au projet :
-
-1. Fork le repository
-2. Créer une branche : `git checkout -b feature/ma-fonctionnalite`
-3. Commit : `git commit -m "Ajout de ma fonctionnalité"`
-4. Push : `git push origin feature/ma-fonctionnalite`
-5. Créer une Pull Request
-
 ## 📄 Licence
 
 Ce projet est développé pour un usage éducatif à l'INSA Centre Val de Loire.
-
-## 🙏 Remerciements
-
-- **INSA Centre Val de Loire** pour les ressources pédagogiques
-- **Qdrant** pour la base de données vectorielle
-- **Ollama** pour les modèles LLM
-- **Streamlit** pour l'interface web
-- **Sentence Transformers** pour les embeddings
 
 ## 📞 Contact & Support
 
