@@ -74,7 +74,7 @@ class Embedder:
             print("    Loaded")
         except Exception as e:
             print(f"    Failed: {e}")
-            fallback = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+            fallback = "sentence-transformers/paraphrase-gmultilingual-mpnet-base-v2"
             print(f"   → Fallback: {fallback}")
             self.model = SentenceTransformer(fallback)
         

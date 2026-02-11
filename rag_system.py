@@ -19,27 +19,28 @@ class INSAAssistant:
         qdrant_host: str = "localhost",
         qdrant_port: int = 6333,
         collection_name: str = "insa_docs",
-        embedding_model: str = "dangvantuan/sentence-camembert-large",
-        llm_model: str = "mistral",
-        top_k: int = 5
+        embedding_model: str = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2",
+        llm_model: str = "phi",
+        top_k: int = 3
     ):
         """Initialize RAG system"""
         print("🚀 Initializing INSA Assistant...")
         
         # Connect to Qdrant
-        print(f"📊 Connecting to Qdrant at {qdrant_host}:{qdrant_port}...")
+        print(f" Connecting to Qdrant at {qdrant_host}:{qdrant_port}...")
         self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
         self.collection_name = collection_name
         
         # Load embedding model
-        print(f"🔤 Loading embedding model: {embedding_model}...")
+        print(f" Loading embedding model: {embedding_model}...")
         self.embedder = SentenceTransformer(embedding_model)
         
         # LLM config
         self.llm_model = llm_model
         self.top_k = top_k
+        print(f"💡 Model: {llm_model}, Top-K: {top_k}")
         
-        print("✅ INSA Assistant ready!\n")
+        print(" INSA Assistant ready!\n")
     
     def retrieve_documents(self, query: str, limit: int = None) -> List[Dict]:
         """Retrieve relevant documents from Qdrant"""
@@ -93,19 +94,24 @@ class INSAAssistant:
         """Generate answer using LLM with retrieved context"""
         
         if system_prompt is None:
-            system_prompt = """Tu es un assistant pédagogique expert pour les étudiants de l'INSA Centre Val de Loire.
-Tu es spécialisé en informatique, réseaux, électronique et mathématiques appliquées.
+            system_prompt = """Tu es un assistant pédagogique pour l'INSA Centre Val de Loire. Spécialisé en informatique, réseaux et électronique.
 
-Instructions importantes:
-1. Utilise les documents fournis comme base de connaissance
-2. Enrichis ta réponse avec tes propres connaissances pour donner une explication complète et pédagogique
-3. Ne cite JAMAIS les sources ou noms de fichiers dans ta réponse
-4. Réponds comme si tu expliquais directement le concept, pas comme si tu résumais des documents
-5. Sois clair, précis et pédagogique
-6. Structure ta réponse avec des titres, listes et exemples pratiques
-7. Donne une réponse complète même si les documents ne couvrent pas tout
+Règles de formatage (IMPORTANT):
+1. Utilise TOUJOURS le format Markdown propre
+2. Pour les formules mathématiques, utilise la notation LaTeX:
+   - Inline: $formule$
+   - Block: $$formule$$
+3. Structure ta réponse avec:
+   - ## Titres de sections
+   - **Texte en gras** pour l'emphase
+   - Listes à puces (- ou *)
+   - Listes numérotées (1., 2., etc.)
+4. Ne cite jamais les sources dans la réponse
+5. Enrichis avec tes connaissances pour être complet
 
-Ton objectif: Donner la meilleure explication possible pour aider l'étudiant à comprendre.
+Exemple de formule: Pour une chaîne de Markov, $P(X_{t+1}=j|X_t=i) = p_{ij}$
+
+Objectif: Réponse claire, bien formatée et pédagogique.
 """
         
         # Format context
@@ -119,7 +125,7 @@ Ton objectif: Donner la meilleure explication possible pour aider l'étudiant à
 Question:
 {query}
 
-Explique de manière claire et complète, sans mentionner les sources.
+Explique de manière claire et complète en utilisant Markdown et LaTeX pour les formules. Sans mentionner les sources.
 """
         
         # Try to generate with Ollama
@@ -133,10 +139,22 @@ Explique de manière claire et complète, sans mentionner les sources.
             )
             answer = response['message']['content']
         except Exception as e:
-            # Fallback: return formatted documents without LLM
-            print(f"⚠️  Ollama not available ({e})")
-            print("📄 Returning retrieved documents without generation\n")
-            answer = self._format_documents_as_answer(documents, query)
+            # Try fallback to mistral if current model fails
+            print(f"⚠️  Model '{self.llm_model}' failed: {e}")
+            try:
+                print(f"🔄 Trying fallback to 'mistral'...")
+                response = ollama.chat(
+                    model='mistral',
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt}
+                    ]
+                )
+                answer = response['message']['content']
+                print("✅ Fallback successful!")
+            except Exception as e2:
+                print(f"❌ Fallback also failed: {e2}")
+                answer = f"⚠️ **Erreur LLM**: Les modèles ne sont pas disponibles.\n\nVeuillez installer un modèle:\n```bash\nollama pull phi\n# ou\nollama pull mistral\n```\n\n**Informations des documents:**\n\n{self._format_documents_as_answer(documents, query)}"
         
         return {
             'answer': answer,
